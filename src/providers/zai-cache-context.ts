@@ -11,17 +11,22 @@ import { usableLiteralSecret } from "../lib/secret.js";
 export const ZAI_API_KEY_ENV = "ZAI_API_KEY";
 
 /**
- * An opaque cache-provenance identifier separating readings taken while a
- * usable `ZAI_API_KEY` is supplied from readings of the stored Pi/opencode
- * credential, which may belong to a different account. It is a presence
- * marker, never any part of the key.
+ * An opaque cache-provenance identifier separating Z.AI accounts. A bare
+ * `ZAI_API_KEY` carries no other account identity, so a usable key is folded
+ * into a domain-separated SHA-256 digest: two different keys never share a
+ * snapshot, the same key keeps reusing its own, and a stored Pi/opencode
+ * reading stays apart from both. Only this one-way digest is persisted; the
+ * key itself is never stored, logged, or rendered.
  */
 export function zaiCredentialContextId(): string {
-  const envSelected =
-    usableLiteralSecret(process.env[ZAI_API_KEY_ENV]?.trim()) !== undefined;
+  const envKey = usableLiteralSecret(process.env[ZAI_API_KEY_ENV]?.trim());
   return createHash("sha256")
     .update(
-      JSON.stringify(["zai-credential-v1", envSelected ? "env-key" : "stored"]),
+      JSON.stringify(
+        envKey === undefined
+          ? ["zai-credential-v2", "stored"]
+          : ["zai-credential-v2", "env-key", envKey],
+      ),
     )
     .digest("hex");
 }

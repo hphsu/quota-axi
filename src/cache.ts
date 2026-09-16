@@ -110,8 +110,9 @@ export function readCachedKimiProvider(
 
 /**
  * Z.AI stale quota may only be reused when the cache record was captured under
- * the same environment-key presence, so an env-supplied account and a stored
- * credential's account never stand in for each other.
+ * the same environment key (by digest) or the same stored-credential selection,
+ * so two env-supplied accounts, or an env-supplied and a stored credential's
+ * account, never stand in for each other.
  */
 export function readCachedZaiProvider(
   contextId: string,

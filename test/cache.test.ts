@@ -246,6 +246,22 @@ describe("quota cache", () => {
     expect(readCachedZaiProvider(zaiCredentialContextId())).toBeUndefined();
   });
 
+  it("keeps Z.AI snapshots from different ZAI_API_KEY accounts apart", () => {
+    useTempCache();
+    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-account-a";
+    writeCachedProviders([quota("zai", 42)]);
+    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeDefined();
+
+    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-account-b";
+    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeUndefined();
+
+    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-account-a";
+    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeDefined();
+    expect(readFileSync(cacheFilePath(), "utf8")).not.toContain(
+      "synthetic-zai-account-a",
+    );
+  });
+
   it("refuses Kimi cache captured under another Kimi Code environment", async () => {
     useTempCache();
     const codeHome = join(tempDir!, "synthetic-kimi-code-home");
