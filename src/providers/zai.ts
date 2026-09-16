@@ -35,6 +35,16 @@ const ZAI_HOST = "api.z.ai";
 const ZHIPU_HOST = "open.bigmodel.cn";
 const OPENCODE_AUTH_SOURCE = "opencode:auth.json";
 const PI_ZAI_SOURCE = "pi:zai";
+const ENV_ZAI_SOURCE = "env:ZAI_API_KEY";
+
+/**
+ * The environment credential the Z.AI SDK and the vendor coding plugins read
+ * before any stored credential, so an explicit key here names the account a
+ * session is actually billing. It is also the only source available when the
+ * key is held in a secret manager and injected at run time rather than written
+ * to a local auth file.
+ */
+export const ZAI_API_KEY_ENV = "ZAI_API_KEY";
 const PI_ZAI_PROVIDER_ID = "zai";
 const USER_AGENT = `quota-axi/${VERSION}`;
 
@@ -143,6 +153,38 @@ function extractPiZaiCredential(
     : { status: "invalid", path, error: "invalid_credential" };
 }
 
+/**
+ * Resolve the Z.AI key supplied through the environment. The value is used for
+ * the request only: it is never logged, cached, or written back, and an unusable
+ * value reports `invalid` rather than being sent, so a template or command
+ * reference cannot reach a header.
+ *
+ * @param readEnv reads the raw environment value, injectable for tests
+ * @returns a credential source over the environment
+ */
+export function createEnvCredentialSource(
+  readEnv: () => string | undefined = () => process.env[ZAI_API_KEY_ENV],
+): ZaiCredentialSource {
+  function resolve(): ZaiCredentialResolution {
+    const path = ZAI_API_KEY_ENV;
+    const raw = readEnv()?.trim();
+    if (!raw) return { status: "missing", path };
+    const key = usableLiteralSecret(raw);
+    return key
+      ? { status: "available", apiKey: key, host: ZAI_HOST, path }
+      : { status: "invalid", path, error: "invalid_credential" };
+  }
+  return {
+    resolve,
+    inspect(): ZaiCredentialInspection {
+      const resolution = resolve();
+      if (resolution.status === "available")
+        return { status: "available", path: resolution.path };
+      return resolution;
+    },
+  };
+}
+
 export function createOpencodeAuthCredentialSource(
   filePath: () => string = opencodeAuthFilePath,
 ): ZaiCredentialSource {
@@ -182,6 +224,7 @@ function createJsonAuthCredentialSource(
 
 export function defaultZaiCredentialSources(): NamedZaiCredentialSource[] {
   return [
+    { name: ENV_ZAI_SOURCE, source: createEnvCredentialSource() },
     { name: PI_ZAI_SOURCE, source: createPiAuthCredentialSource() },
     {
       name: OPENCODE_AUTH_SOURCE,

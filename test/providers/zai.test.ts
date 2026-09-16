@@ -3,13 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createEnvCredentialSource,
   createOpencodeAuthCredentialSource,
   createPiAuthCredentialSource,
   createZaiAdapter,
+  defaultZaiCredentialSources,
   extractZaiCredential,
   normalizeRetryAfter,
   normalizeZaiPayload,
   opencodeAuthFilePath,
+  ZAI_API_KEY_ENV,
   type NamedZaiCredentialSource,
   type ZaiCredentialResolution,
   type ZaiCredentialSource,
@@ -1581,3 +1584,58 @@ async function transientWithCache(
     readCachedProvider: () => cached,
   }).fetchQuota(OPTIONS);
 }
+
+describe("Z.AI environment credential", () => {
+  it("resolves a usable key supplied through the environment", () => {
+    expect(createEnvCredentialSource(() => SYNTHETIC_KEY).resolve()).toEqual({
+      status: "available",
+      apiKey: SYNTHETIC_KEY,
+      host: "api.z.ai",
+      path: ZAI_API_KEY_ENV,
+    });
+  });
+
+  it("trims surrounding whitespace before use", () => {
+    expect(
+      createEnvCredentialSource(() => `  ${SYNTHETIC_KEY}\n`).resolve(),
+    ).toEqual({
+      status: "available",
+      apiKey: SYNTHETIC_KEY,
+      host: "api.z.ai",
+      path: ZAI_API_KEY_ENV,
+    });
+  });
+
+  it.each([undefined, "", "   "])("reports missing for %p", (value) => {
+    expect(createEnvCredentialSource(() => value).resolve()).toEqual({
+      status: "missing",
+      path: ZAI_API_KEY_ENV,
+    });
+  });
+
+  it.each(["$ZAI_API_KEY", "!op://vault/zai", "bad\u0001key"])(
+    "refuses to send the unusable value %p",
+    (value) => {
+      expect(createEnvCredentialSource(() => value).resolve()).toEqual({
+        status: "invalid",
+        path: ZAI_API_KEY_ENV,
+        error: "invalid_credential",
+      });
+    },
+  );
+
+  it("inspects without exposing the secret", () => {
+    expect(createEnvCredentialSource(() => SYNTHETIC_KEY).inspect()).toEqual({
+      status: "available",
+      path: ZAI_API_KEY_ENV,
+    });
+  });
+
+  it("is consulted before the stored credential sources", () => {
+    expect(defaultZaiCredentialSources().map(({ name }) => name)).toEqual([
+      "env:ZAI_API_KEY",
+      "pi:zai",
+      "opencode:auth.json",
+    ]);
+  });
+});
