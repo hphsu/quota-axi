@@ -7,12 +7,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   deleteCachedProvider as deleteCachedProviderFromDisk,
-  readCachedProvider as readCachedProviderFromDisk,
+  readCachedZaiProvider as readCachedProviderFromDisk,
 } from "../cache.js";
 import { readJsonFileResult, type JsonFileReadResult } from "../lib/fs.js";
 import { resolvePiAuthFilePath } from "../lib/pi-agent-dir.js";
 import { classifyPiAuthEntry } from "../lib/pi-auth-store.js";
 import { usableLiteralSecret } from "../lib/secret.js";
+import {
+  ZAI_API_KEY_ENV,
+  zaiCredentialContextId,
+} from "./zai-cache-context.js";
 import type {
   AuthProviderReport,
   AuthSourceReport,
@@ -33,18 +37,10 @@ const WEEK_SECONDS = 7 * 24 * 60 * 60;
 const MONTH_SECONDS = 30 * 24 * 60 * 60;
 const ZAI_HOST = "api.z.ai";
 const ZHIPU_HOST = "open.bigmodel.cn";
+export { ZAI_API_KEY_ENV };
 const OPENCODE_AUTH_SOURCE = "opencode:auth.json";
 const PI_ZAI_SOURCE = "pi:zai";
 const ENV_ZAI_SOURCE = "env:ZAI_API_KEY";
-
-/**
- * The environment credential the Z.AI SDK and the vendor coding plugins read
- * before any stored credential, so an explicit key here names the account a
- * session is actually billing. It is also the only source available when the
- * key is held in a secret manager and injected at run time rather than written
- * to a local auth file.
- */
-export const ZAI_API_KEY_ENV = "ZAI_API_KEY";
 const PI_ZAI_PROVIDER_ID = "zai";
 const USER_AGENT = `quota-axi/${VERSION}`;
 
@@ -436,7 +432,7 @@ function failureReport(
 
   if (failure.staleEligible) {
     try {
-      const cached = dependencies.readCachedProvider("zai");
+      const cached = dependencies.readCachedProvider(zaiCredentialContextId());
       const stale = cached
         ? staleZaiReport(
             cached,

@@ -14,15 +14,21 @@ import {
   readCachedClaudeProvider,
   readCachedKimiProvider,
   readCachedProvider,
+  readCachedZaiProvider,
   writeCachedProviders,
 } from "../src/cache.js";
 import { cacheFilePath, claudeCredentialContextId } from "../src/lib/fs.js";
 import { createKimiCodeCliCredentialSource } from "../src/providers/kimi-code-cli-credential.js";
+import {
+  ZAI_API_KEY_ENV,
+  zaiCredentialContextId,
+} from "../src/providers/zai-cache-context.js";
 import type { ProviderId, ProviderQuota } from "../src/types.js";
 
 const originalXdgCacheHome = process.env.XDG_CACHE_HOME;
 const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 const originalKimiCodeHome = process.env.KIMI_CODE_HOME;
+const originalZaiApiKey = process.env[ZAI_API_KEY_ENV];
 let tempDir: string | undefined;
 
 afterEach(() => {
@@ -33,6 +39,8 @@ afterEach(() => {
   else process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
   if (originalKimiCodeHome === undefined) delete process.env.KIMI_CODE_HOME;
   else process.env.KIMI_CODE_HOME = originalKimiCodeHome;
+  if (originalZaiApiKey === undefined) delete process.env[ZAI_API_KEY_ENV];
+  else process.env[ZAI_API_KEY_ENV] = originalZaiApiKey;
   if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   tempDir = undefined;
 });
@@ -208,6 +216,34 @@ describe("quota cache", () => {
     expect(contextId).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(payload)).not.toContain(contextDir);
     expect(readCachedClaudeProvider(claudeCredentialContextId())).toBeDefined();
+  });
+
+  it("refuses a stored-credential Z.AI snapshot once ZAI_API_KEY is supplied", () => {
+    useTempCache();
+    delete process.env[ZAI_API_KEY_ENV];
+    writeCachedProviders([quota("zai", 42)]);
+    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeDefined();
+
+    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-env-key";
+
+    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeUndefined();
+    expect(JSON.stringify(readFileSync(cacheFilePath(), "utf8"))).not.toContain(
+      "synthetic-zai-env-key",
+    );
+  });
+
+  it("refuses an env-key Z.AI snapshot once ZAI_API_KEY is gone", () => {
+    useTempCache();
+    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-env-key";
+    writeCachedProviders([quota("zai", 42)]);
+    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeDefined();
+    expect(readFileSync(cacheFilePath(), "utf8")).not.toContain(
+      "synthetic-zai-env-key",
+    );
+
+    delete process.env[ZAI_API_KEY_ENV];
+
+    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeUndefined();
   });
 
   it("refuses Kimi cache captured under another Kimi Code environment", async () => {

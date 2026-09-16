@@ -6,6 +6,7 @@ import {
   readJsonFile,
 } from "./lib/fs.js";
 import { kimiReadingContextId } from "./providers/kimi-cache-context.js";
+import { zaiCredentialContextId } from "./providers/zai-cache-context.js";
 import type {
   ProviderId,
   ProviderQuota,
@@ -60,12 +61,16 @@ const CREDENTIAL_CONTEXT_ID = /^[a-f0-9]{64}$/;
  * because Pi brokers a credential for the default endpoint while naming no
  * deployment. Kimi therefore reports the identity of whatever actually produced
  * its reading.
+ *
+ * Z.AI mirrors Claude: a `ZAI_API_KEY` in this process's environment selects an
+ * account the stored Pi/opencode credential does not describe.
  */
 const CONTEXT_SCOPED_PROVIDERS: Partial<
   Record<ProviderId, () => string | undefined>
 > = {
   claude: claudeCredentialContextId,
   kimi: kimiReadingContextId,
+  zai: zaiCredentialContextId,
 };
 
 type CachedProvider = {
@@ -101,6 +106,17 @@ export function readCachedKimiProvider(
   contextId: string,
 ): ProviderQuota | undefined {
   return readCachedProviderInContext("kimi", contextId);
+}
+
+/**
+ * Z.AI stale quota may only be reused when the cache record was captured under
+ * the same environment-key presence, so an env-supplied account and a stored
+ * credential's account never stand in for each other.
+ */
+export function readCachedZaiProvider(
+  contextId: string,
+): ProviderQuota | undefined {
+  return readCachedProviderInContext("zai", contextId);
 }
 
 function readCachedProviderInContext(
