@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   resetZaiReadingContextId,
+  ZAI_API_KEY_ENV,
   zaiCredentialContextId,
   zaiReadingContextId,
 } from "../../src/providers/zai-cache-context.js";
@@ -17,7 +18,6 @@ import {
   normalizeRetryAfter,
   normalizeZaiPayload,
   opencodeAuthFilePath,
-  ZAI_API_KEY_ENV,
   type NamedZaiCredentialSource,
   type ZaiCredentialResolution,
   type ZaiCredentialSource,
@@ -1774,5 +1774,47 @@ describe("Z.AI cache identity follows the source that answered", () => {
     // would still pass.
     expect(read).toHaveBeenCalledWith(PI_CONTEXT);
     expect(report.source).toBe("cache");
+  });
+
+  it("serves the transiently failing account's snapshot when an earlier stored source is unreadable", async () => {
+    const OPENCODE_CONTEXT = zaiCredentialContextId({
+      kind: "stored",
+      source: "opencode:auth.json",
+    });
+    const read = vi.fn((contextId: string) =>
+      contextId === OPENCODE_CONTEXT ? cachedQuota() : undefined,
+    );
+
+    const report = await createZaiAdapter({
+      credentialSources: [
+        {
+          name: "pi:zai",
+          source: credentialSource({
+            status: "error",
+            path: "/home/user/.pi/agent/auth.json",
+            error: "file_read_error",
+          }),
+        },
+        {
+          name: "opencode:auth.json",
+          source: credentialSource({
+            status: "available",
+            apiKey: SYNTHETIC_KEY,
+            host: "api.z.ai",
+            path: "/home/user/.local/share/opencode/auth.json",
+          }),
+        },
+      ],
+      fetch: vi.fn(
+        async () => new Response(null, { status: 503 }),
+      ) as unknown as typeof fetch,
+      readCachedProvider: read,
+      deleteCachedProvider: () => undefined,
+      now: () => NOW,
+    }).fetchQuota(OPTIONS);
+
+    expect(report.source).toBe("cache");
+    expect(report.state).toMatchObject({ status: "stale", stale: true });
+    expect(read.mock.calls[0]).toEqual([OPENCODE_CONTEXT]);
   });
 });

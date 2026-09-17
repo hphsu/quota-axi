@@ -39,7 +39,6 @@ const WEEK_SECONDS = 7 * 24 * 60 * 60;
 const MONTH_SECONDS = 30 * 24 * 60 * 60;
 const ZAI_HOST = "api.z.ai";
 const ZHIPU_HOST = "open.bigmodel.cn";
-export { ZAI_API_KEY_ENV };
 const OPENCODE_AUTH_SOURCE = "opencode:auth.json";
 const PI_ZAI_SOURCE = "pi:zai";
 const ENV_ZAI_SOURCE = "env:ZAI_API_KEY";
@@ -309,8 +308,8 @@ function contextForSource(
 type ZaiCacheScope = {
   /** Contexts whose credential this run proved bad. */
   rejected: Set<string>;
-  /** The account a stale reading would stand in for, if any. */
-  staleContext?: string;
+  /** Accounts a stale reading may stand in for, most specific first. */
+  staleContexts: string[];
   /** Whether any source produced a usable credential at all. */
   resolvedAny: boolean;
 };
@@ -325,7 +324,11 @@ async function acquireZaiQuota(
   );
   const attempts: SourceAttempt[] = [];
   let lastFailure: ZaiFailure | undefined;
-  const cacheScope: ZaiCacheScope = { rejected: new Set(), resolvedAny: false };
+  const cacheScope: ZaiCacheScope = {
+    rejected: new Set(),
+    staleContexts: [],
+    resolvedAny: false,
+  };
 
   try {
     for (const { name, source } of dependencies.credentialSources) {
@@ -340,7 +343,7 @@ async function acquireZaiQuota(
         lastFailure = preferCredentialFailure(lastFailure, failure);
         const unresolvedContext = contextForSource(name, resolution);
         if (!failure.definitiveAuth && unresolvedContext !== undefined)
-          cacheScope.staleContext ??= unresolvedContext;
+          cacheScope.staleContexts.push(unresolvedContext);
         continue;
       }
 
@@ -397,7 +400,8 @@ async function acquireZaiQuota(
           if (contextId !== undefined) cacheScope.rejected.add(contextId);
           continue;
         }
-        if (contextId !== undefined) cacheScope.staleContext ??= contextId;
+        if (contextId !== undefined)
+          cacheScope.staleContexts.unshift(contextId);
         return failureReport(failure, attempts, dependencies, cacheScope);
       }
     }
@@ -491,21 +495,20 @@ function failureReport(
 
   if (failure.staleEligible) {
     try {
-      const contextId = cacheScope.staleContext;
-      const cached =
-        contextId !== undefined && !cacheScope.rejected.has(contextId)
-          ? dependencies.readCachedProvider(contextId)
+      for (const contextId of cacheScope.staleContexts) {
+        if (cacheScope.rejected.has(contextId)) continue;
+        const cached = dependencies.readCachedProvider(contextId);
+        const stale = cached
+          ? staleZaiReport(
+              cached,
+              failure.code,
+              failure.retryAfter,
+              attempts,
+              dependencies.now(),
+            )
           : undefined;
-      const stale = cached
-        ? staleZaiReport(
-            cached,
-            failure.code,
-            failure.retryAfter,
-            attempts,
-            dependencies.now(),
-          )
-        : undefined;
-      if (stale) return stale;
+        if (stale) return stale;
+      }
     } catch {
       // Cache I/O cannot replace the bounded current provider failure.
     }
