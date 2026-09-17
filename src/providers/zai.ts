@@ -15,12 +15,14 @@ import { classifyPiAuthEntry } from "../lib/pi-auth-store.js";
 import { usableLiteralSecret } from "../lib/secret.js";
 import {
   ZAI_API_KEY_ENV,
+  publishZaiReadingContextId,
   zaiCredentialContextId,
 } from "./zai-cache-context.js";
 import type {
   AuthProviderReport,
   AuthSourceReport,
   ProviderAdapter,
+  ProviderId,
   ProviderOptions,
   ProviderQuota,
   ProviderStatus,
@@ -275,6 +277,44 @@ export function createZaiAdapter(
 
 export const zaiAdapter = createZaiAdapter();
 
+/**
+ * The account a resolved source speaks for. Only the environment source has no
+ * identity of its own, so its key stands in; a stored source names itself,
+ * because Pi and opencode can hold different accounts.
+ */
+function contextForSource(
+  name: string,
+  resolution: ZaiCredentialResolution,
+): string | undefined {
+  if (name !== ENV_ZAI_SOURCE)
+    return zaiCredentialContextId({ kind: "stored", source: name });
+  // The environment names an account only through the key itself, so an absent
+  // or unusable value identifies nothing to cache against.
+  return resolution.status === "available"
+    ? zaiCredentialContextId({ kind: "env-key", apiKey: resolution.apiKey })
+    : undefined;
+}
+
+/**
+ * What this run learned about individual accounts, which the merged failure
+ * cannot carry.
+ *
+ * `preferCredentialFailure` reports the least definitive failure, because a
+ * provider whose other source may recover is not in an auth_required state. A
+ * definitive rejection of ONE credential is real all the same, and deciding the
+ * cache from the merged failure loses it both ways: a rejected key keeps being
+ * served from cache when a sibling source fails transiently, and a rejected key
+ * discards every other account's snapshot when it does not.
+ */
+type ZaiCacheScope = {
+  /** Contexts whose credential this run proved bad. */
+  rejected: Set<string>;
+  /** The account a stale reading would stand in for, if any. */
+  staleContext?: string;
+  /** Whether any source produced a usable credential at all. */
+  resolvedAny: boolean;
+};
+
 async function acquireZaiQuota(
   dependencies: ZaiDependencies,
 ): Promise<ProviderQuota> {
@@ -285,6 +325,7 @@ async function acquireZaiQuota(
   );
   const attempts: SourceAttempt[] = [];
   let lastFailure: ZaiFailure | undefined;
+  const cacheScope: ZaiCacheScope = { rejected: new Set(), resolvedAny: false };
 
   try {
     for (const { name, source } of dependencies.credentialSources) {
@@ -297,10 +338,15 @@ async function acquireZaiQuota(
           error: failure.code,
         });
         lastFailure = preferCredentialFailure(lastFailure, failure);
+        const unresolvedContext = contextForSource(name, resolution);
+        if (!failure.definitiveAuth && unresolvedContext !== undefined)
+          cacheScope.staleContext ??= unresolvedContext;
         continue;
       }
 
       attempts.push({ source: name, status: "failed" });
+      cacheScope.resolvedAny = true;
+      const contextId = contextForSource(name, resolution);
       try {
         const payload = await requestZaiQuota(
           resolution.apiKey,
@@ -318,6 +364,7 @@ async function acquireZaiQuota(
           source: name,
           status: "success",
         };
+        if (contextId !== undefined) publishZaiReadingContextId(contextId);
         return {
           provider: "zai",
           label: "Z.AI",
@@ -347,9 +394,11 @@ async function acquireZaiQuota(
         };
         lastFailure = preferCredentialFailure(lastFailure, failure);
         if (failure.definitiveAuth) {
+          if (contextId !== undefined) cacheScope.rejected.add(contextId);
           continue;
         }
-        return failureReport(failure, attempts, dependencies);
+        if (contextId !== undefined) cacheScope.staleContext ??= contextId;
+        return failureReport(failure, attempts, dependencies, cacheScope);
       }
     }
 
@@ -367,7 +416,7 @@ async function acquireZaiQuota(
         status: "auth_required",
         definitiveAuth: true,
       });
-    return failureReport(failure, attempts, dependencies);
+    return failureReport(failure, attempts, dependencies, cacheScope);
   } catch (error) {
     const failure =
       error instanceof ZaiFailure
@@ -382,7 +431,7 @@ async function acquireZaiQuota(
         error: failure.code,
       });
     }
-    return failureReport(failure, attempts, dependencies);
+    return failureReport(failure, attempts, dependencies, cacheScope);
   } finally {
     clearTimeout(deadline);
   }
@@ -421,10 +470,20 @@ function failureReport(
   failure: ZaiFailure,
   attempts: SourceAttempt[],
   dependencies: ZaiDependencies,
+  cacheScope: ZaiCacheScope,
 ): ProviderQuota {
-  if (failure.definitiveAuth) {
+  // A rejection disproves the credential that was tried, so drop exactly that
+  // account. When nothing resolved at all there is no account left to report,
+  // and the provider retires as a whole.
+  const retirements: (readonly [ProviderId, string?])[] = cacheScope.resolvedAny
+    ? [...cacheScope.rejected].map((contextId) => ["zai", contextId] as const)
+    : failure.definitiveAuth
+      ? [["zai"] as const]
+      : [];
+  for (const [provider, contextId] of retirements) {
     try {
-      dependencies.deleteCachedProvider("zai");
+      if (contextId === undefined) dependencies.deleteCachedProvider(provider);
+      else dependencies.deleteCachedProvider(provider, contextId);
     } catch {
       // The current auth failure is still definitive even if the cache is not writable.
     }
@@ -432,7 +491,11 @@ function failureReport(
 
   if (failure.staleEligible) {
     try {
-      const cached = dependencies.readCachedProvider(zaiCredentialContextId());
+      const contextId = cacheScope.staleContext;
+      const cached =
+        contextId !== undefined && !cacheScope.rejected.has(contextId)
+          ? dependencies.readCachedProvider(contextId)
+          : undefined;
       const stale = cached
         ? staleZaiReport(
             cached,

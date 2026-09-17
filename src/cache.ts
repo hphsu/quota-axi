@@ -6,7 +6,7 @@ import {
   readJsonFile,
 } from "./lib/fs.js";
 import { kimiReadingContextId } from "./providers/kimi-cache-context.js";
-import { zaiCredentialContextId } from "./providers/zai-cache-context.js";
+import { zaiReadingContextId } from "./providers/zai-cache-context.js";
 import type {
   ProviderId,
   ProviderQuota,
@@ -62,15 +62,17 @@ const CREDENTIAL_CONTEXT_ID = /^[a-f0-9]{64}$/;
  * deployment. Kimi therefore reports the identity of whatever actually produced
  * its reading.
  *
- * Z.AI mirrors Claude: a `ZAI_API_KEY` in this process's environment selects an
- * account the stored Pi/opencode credential does not describe.
+ * Z.AI mirrors Kimi rather than Claude, and for the same reason: it resolves a
+ * chain of sources, so the identity-bearing one can be rejected and a different
+ * account answer in its place. It therefore reports the identity of whatever
+ * actually produced its reading instead of reading the environment here.
  */
 const CONTEXT_SCOPED_PROVIDERS: Partial<
   Record<ProviderId, () => string | undefined>
 > = {
   claude: claudeCredentialContextId,
   kimi: kimiReadingContextId,
-  zai: zaiCredentialContextId,
+  zai: zaiReadingContextId,
 };
 
 type CachedProvider = {
@@ -165,12 +167,28 @@ export function writeCachedProviders(providers: ProviderQuota[]): void {
   writeCacheFile(file, merged);
 }
 
-export function deleteCachedProvider(provider: ProviderId): void {
+/**
+ * Drop cached records for a provider whose credential was definitively
+ * rejected.
+ *
+ * `contextId` narrows the deletion to the one account that was rejected. A
+ * context-scoped provider holds a record per account, and a rejection disproves
+ * only the credential that was tried: without this, one bad key would also
+ * discard the snapshots of accounts this run never contacted. Omitting it keeps
+ * the provider-wide sweep the single-account providers rely on.
+ */
+export function deleteCachedProvider(
+  provider: ProviderId,
+  contextId?: string,
+): void {
   const existing = readCacheProviders();
-  if (!existing.some((item) => item.snapshot.provider === provider)) return;
+  const doomed = (item: CachedProvider): boolean =>
+    item.snapshot.provider === provider &&
+    (contextId === undefined || item.credentialContextId === contextId);
+  if (!existing.some(doomed)) return;
   writeCacheFile(
     cacheFilePath(),
-    existing.filter((item) => item.snapshot.provider !== provider),
+    existing.filter((item) => !doomed(item)),
   );
 }
 

@@ -21,6 +21,8 @@ import { cacheFilePath, claudeCredentialContextId } from "../src/lib/fs.js";
 import { createKimiCodeCliCredentialSource } from "../src/providers/kimi-code-cli-credential.js";
 import {
   ZAI_API_KEY_ENV,
+  publishZaiReadingContextId,
+  resetZaiReadingContextId,
   zaiCredentialContextId,
 } from "../src/providers/zai-cache-context.js";
 import type { ProviderId, ProviderQuota } from "../src/types.js";
@@ -41,6 +43,7 @@ afterEach(() => {
   else process.env.KIMI_CODE_HOME = originalKimiCodeHome;
   if (originalZaiApiKey === undefined) delete process.env[ZAI_API_KEY_ENV];
   else process.env[ZAI_API_KEY_ENV] = originalZaiApiKey;
+  resetZaiReadingContextId();
   if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   tempDir = undefined;
 });
@@ -218,48 +221,79 @@ describe("quota cache", () => {
     expect(readCachedClaudeProvider(claudeCredentialContextId())).toBeDefined();
   });
 
-  it("refuses a stored-credential Z.AI snapshot once ZAI_API_KEY is supplied", () => {
+  it("refuses a stored-credential Z.AI snapshot to an env-key reading", () => {
     useTempCache();
-    delete process.env[ZAI_API_KEY_ENV];
+    const stored = zaiCredentialContextId({
+      kind: "stored",
+      source: "opencode:auth.json",
+    });
+    publishZaiReadingContextId(stored);
     writeCachedProviders([quota("zai", 42)]);
-    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeDefined();
+    expect(readCachedZaiProvider(stored)).toBeDefined();
 
-    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-env-key";
+    const envKey = zaiCredentialContextId({
+      kind: "env-key",
+      apiKey: "synthetic-zai-env-key",
+    });
 
-    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeUndefined();
-    expect(JSON.stringify(readFileSync(cacheFilePath(), "utf8"))).not.toContain(
+    expect(readCachedZaiProvider(envKey)).toBeUndefined();
+    expect(readFileSync(cacheFilePath(), "utf8")).not.toContain(
       "synthetic-zai-env-key",
     );
   });
 
-  it("refuses an env-key Z.AI snapshot once ZAI_API_KEY is gone", () => {
+  it("refuses an env-key Z.AI snapshot to a stored-credential reading", () => {
     useTempCache();
-    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-env-key";
+    const envKey = zaiCredentialContextId({
+      kind: "env-key",
+      apiKey: "synthetic-zai-env-key",
+    });
+    publishZaiReadingContextId(envKey);
     writeCachedProviders([quota("zai", 42)]);
-    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeDefined();
+    expect(readCachedZaiProvider(envKey)).toBeDefined();
     expect(readFileSync(cacheFilePath(), "utf8")).not.toContain(
       "synthetic-zai-env-key",
     );
 
-    delete process.env[ZAI_API_KEY_ENV];
-
-    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeUndefined();
+    expect(
+      readCachedZaiProvider(
+        zaiCredentialContextId({ kind: "stored", source: "pi:zai" }),
+      ),
+    ).toBeUndefined();
   });
 
   it("keeps Z.AI snapshots from different ZAI_API_KEY accounts apart", () => {
     useTempCache();
-    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-account-a";
+    const accountA = zaiCredentialContextId({
+      kind: "env-key",
+      apiKey: "synthetic-zai-account-a",
+    });
+    const accountB = zaiCredentialContextId({
+      kind: "env-key",
+      apiKey: "synthetic-zai-account-b",
+    });
+    publishZaiReadingContextId(accountA);
     writeCachedProviders([quota("zai", 42)]);
-    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeDefined();
 
-    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-account-b";
-    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeUndefined();
-
-    process.env[ZAI_API_KEY_ENV] = "synthetic-zai-account-a";
-    expect(readCachedZaiProvider(zaiCredentialContextId())).toBeDefined();
+    expect(readCachedZaiProvider(accountA)).toBeDefined();
+    expect(readCachedZaiProvider(accountB)).toBeUndefined();
     expect(readFileSync(cacheFilePath(), "utf8")).not.toContain(
       "synthetic-zai-account-a",
     );
+  });
+
+  it("keeps two stored Z.AI sources apart, because they can hold different accounts", () => {
+    useTempCache();
+    const pi = zaiCredentialContextId({ kind: "stored", source: "pi:zai" });
+    const opencode = zaiCredentialContextId({
+      kind: "stored",
+      source: "opencode:auth.json",
+    });
+    publishZaiReadingContextId(pi);
+    writeCachedProviders([quota("zai", 42)]);
+
+    expect(readCachedZaiProvider(pi)).toBeDefined();
+    expect(readCachedZaiProvider(opencode)).toBeUndefined();
   });
 
   it("refuses Kimi cache captured under another Kimi Code environment", async () => {

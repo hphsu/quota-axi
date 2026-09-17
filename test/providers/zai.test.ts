@@ -3,6 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  resetZaiReadingContextId,
+  zaiCredentialContextId,
+  zaiReadingContextId,
+} from "../../src/providers/zai-cache-context.js";
+import {
   createEnvCredentialSource,
   createOpencodeAuthCredentialSource,
   createPiAuthCredentialSource,
@@ -913,7 +918,15 @@ describe("Z.AI cache fallback", () => {
       readCachedProvider: () => cachedQuota(),
     }).fetchQuota(OPTIONS);
 
-    expect(remove).toHaveBeenCalledWith("zai");
+    // Scoped to the account that was actually rejected: a 401 disproves this
+    // credential, not every Z.AI account the cache holds.
+    expect(remove).toHaveBeenCalledWith(
+      "zai",
+      zaiCredentialContextId({
+        kind: "stored",
+        source: "opencode:auth.json",
+      }),
+    );
     expect(report.state).toMatchObject({
       status: "auth_required",
       error: "provider_auth_rejected",
@@ -1637,5 +1650,129 @@ describe("Z.AI environment credential", () => {
       "pi:zai",
       "opencode:auth.json",
     ]);
+  });
+});
+
+describe("Z.AI cache identity follows the source that answered", () => {
+  const ENV_KEY = "synthetic-env-account-key";
+  const ENV_CONTEXT = zaiCredentialContextId({
+    kind: "env-key",
+    apiKey: ENV_KEY,
+  });
+  const PI_CONTEXT = zaiCredentialContextId({
+    kind: "stored",
+    source: "pi:zai",
+  });
+
+  function sources(pi: ZaiCredentialResolution): NamedZaiCredentialSource[] {
+    return [
+      {
+        name: "env:ZAI_API_KEY",
+        source: credentialSource({
+          status: "available",
+          apiKey: ENV_KEY,
+          host: "api.z.ai",
+          path: "ZAI_API_KEY",
+        }),
+      },
+      { name: "pi:zai", source: credentialSource(pi) },
+    ];
+  }
+
+  const PI_AVAILABLE: ZaiCredentialResolution = {
+    status: "available",
+    apiKey: SYNTHETIC_KEY,
+    host: "api.z.ai",
+    path: "/home/user/.pi/agent/auth.json",
+  };
+
+  it("files a stored account's reading under the stored account, not the env key that was rejected", async () => {
+    resetZaiReadingContextId();
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse(QUOTA_PAYLOAD));
+
+    const report = await createZaiAdapter({
+      credentialSources: sources(PI_AVAILABLE),
+      fetch: request as unknown as typeof fetch,
+      readCachedProvider: () => undefined,
+      deleteCachedProvider: () => undefined,
+      now: () => NOW,
+    }).fetchQuota(OPTIONS);
+
+    expect(report.state).toMatchObject({ status: "fresh" });
+    // Pi answered, so Pi's numbers must be stamped with Pi's identity. Stamping
+    // the env key here is what let a stored account be served back as the env
+    // account.
+    expect(zaiReadingContextId()).toBe(PI_CONTEXT);
+    expect(zaiReadingContextId()).not.toBe(ENV_CONTEXT);
+  });
+
+  it("never serves a definitively rejected env key its own stale numbers", async () => {
+    const remove = vi.fn();
+    const read = vi.fn(() => cachedQuota());
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+
+    const report = await createZaiAdapter({
+      credentialSources: sources(PI_AVAILABLE),
+      fetch: request as unknown as typeof fetch,
+      readCachedProvider: read,
+      deleteCachedProvider: remove,
+      now: () => NOW,
+    }).fetchQuota(OPTIONS);
+
+    // The 401 is definitive for this key even though the reported failure is
+    // the recoverable 503 from the next source.
+    expect(remove).toHaveBeenCalledWith("zai", ENV_CONTEXT);
+    // Any stale stand-in belongs to Pi, the source that could recover -- never
+    // to the key the vendor just rejected.
+    expect(read).not.toHaveBeenCalledWith(ENV_CONTEXT);
+    for (const call of read.mock.calls) expect(call[0]).toBe(PI_CONTEXT);
+    expect(report.state).not.toMatchObject({ error: "provider_auth_rejected" });
+  });
+
+  it("retires only the rejected account, not every cached Z.AI account", async () => {
+    const remove = vi.fn();
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }));
+
+    await createZaiAdapter({
+      credentialSources: sources({
+        status: "missing",
+        path: "/home/user/.pi/agent/auth.json",
+      }),
+      fetch: request as unknown as typeof fetch,
+      readCachedProvider: () => undefined,
+      deleteCachedProvider: remove,
+      now: () => NOW,
+    }).fetchQuota(OPTIONS);
+
+    expect(remove).toHaveBeenCalledWith("zai", ENV_CONTEXT);
+    expect(remove).not.toHaveBeenCalledWith("zai");
+  });
+
+  it("reads stale quota under the answering source's context", async () => {
+    const read = vi.fn(() => cachedQuota());
+    const report = await createZaiAdapter({
+      credentialSources: [
+        { name: "pi:zai", source: credentialSource(PI_AVAILABLE) },
+      ],
+      fetch: vi.fn(
+        async () => new Response(null, { status: 503 }),
+      ) as unknown as typeof fetch,
+      readCachedProvider: read,
+      deleteCachedProvider: () => undefined,
+      now: () => NOW,
+    }).fetchQuota(OPTIONS);
+
+    // Without this the adapter could pass any constant and every other test
+    // would still pass.
+    expect(read).toHaveBeenCalledWith(PI_CONTEXT);
+    expect(report.source).toBe("cache");
   });
 });

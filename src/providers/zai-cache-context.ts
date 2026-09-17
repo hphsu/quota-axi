@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { usableLiteralSecret } from "../lib/secret.js";
 
 /**
  * The environment credential the Z.AI SDK and the vendor coding plugins read
@@ -11,22 +10,59 @@ import { usableLiteralSecret } from "../lib/secret.js";
 export const ZAI_API_KEY_ENV = "ZAI_API_KEY";
 
 /**
- * An opaque cache-provenance identifier separating Z.AI accounts. A bare
- * `ZAI_API_KEY` carries no other account identity, so a usable key is folded
- * into a domain-separated SHA-256 digest: two different keys never share a
- * snapshot, the same key keeps reusing its own, and a stored Pi/opencode
- * reading stays apart from both. Only this one-way digest is persisted; the
- * key itself is never stored, logged, or rendered.
+ * The account a Z.AI reading belongs to, as the source that produced it.
+ *
+ * A bare `ZAI_API_KEY` carries no other account identity, so the key itself is
+ * folded into the digest: two different keys never share a snapshot and the
+ * same key keeps reusing its own. A stored credential names its own source
+ * instead, because Pi's entry and opencode's `auth.json` can hold different
+ * accounts and neither is described by whatever key the environment happens to
+ * carry. Only the one-way digest is persisted; the key itself is never stored,
+ * logged, or rendered.
  */
-export function zaiCredentialContextId(): string {
-  const envKey = usableLiteralSecret(process.env[ZAI_API_KEY_ENV]?.trim());
+export type ZaiCredentialIdentity =
+  | { kind: "env-key"; apiKey: string }
+  | { kind: "stored"; source: string };
+
+export function zaiCredentialContextId(
+  identity: ZaiCredentialIdentity,
+): string {
   return createHash("sha256")
     .update(
       JSON.stringify(
-        envKey === undefined
-          ? ["zai-credential-v2", "stored"]
-          : ["zai-credential-v2", "env-key", envKey],
+        identity.kind === "env-key"
+          ? ["zai-credential-v3", "env-key", identity.apiKey]
+          : ["zai-credential-v3", "stored", identity.source],
       ),
     )
     .digest("hex");
+}
+
+/**
+ * The cache identity the Z.AI reading this process produced belongs to, or
+ * `undefined` when nothing has claimed one yet.
+ *
+ * The cache writer reads this rather than deriving an identity for itself, for
+ * the reason the Kimi note beside it gives: the environment at write time is
+ * not necessarily what answered. An environment key that is definitively
+ * rejected hands over to a stored credential, and deriving the stamp from the
+ * environment would file that stored account's numbers under the environment
+ * key's identity — and then serve them back as the environment account's.
+ *
+ * Publishing the identity of whatever actually produced the reading is the only
+ * stamp that cannot make that mistake.
+ */
+let readingContextId: string | undefined;
+
+export function publishZaiReadingContextId(contextId: string): void {
+  readingContextId = contextId;
+}
+
+export function zaiReadingContextId(): string | undefined {
+  return readingContextId;
+}
+
+/** Test seam: forget any identity claimed by an earlier reading. */
+export function resetZaiReadingContextId(): void {
+  readingContextId = undefined;
 }
